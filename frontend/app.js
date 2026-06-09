@@ -199,24 +199,23 @@ function escapeHtml(text) {
     return d.innerHTML;
 }
 
-// Append messages to chat interface
-function appendMessage(sender, text) {
-    const messageDiv = document.createElement('div');
-    messageDiv.classList.add('message');
-    messageDiv.classList.add(sender === 'user' ? 'user-message' : 'agent-message');
-
-    // Escape HTML first, then apply safe markdown transforms
+// Convert plain text with markdown to safe HTML
+function renderMarkdown(text) {
     let html = escapeHtml(text)
         .replace(/\n/g, '<br>')
         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
         .replace(/`([^`]+)`/g, '<code>$1</code>')
         .replace(/### (.*?)(<br>|$)/g, '<h3>$1</h3>')
         .replace(/(?:^|(?<=<br>))- (.*?)(?=<br>|$)/g, '<li>$1</li>');
+    return html.replace(/(<li>[\s\S]*?<\/li>)+/g, m => `<ul>${m}</ul>`);
+}
 
-    // Wrap orphan <li> runs inside <ul>
-    html = html.replace(/(<li>[\s\S]*?<\/li>)+/g, m => `<ul>${m}</ul>`);
-
-    messageDiv.innerHTML = `<div class="message-content">${html}</div>`;
+// Append messages to chat interface
+function appendMessage(sender, text) {
+    const messageDiv = document.createElement('div');
+    messageDiv.classList.add('message');
+    messageDiv.classList.add(sender === 'user' ? 'user-message' : 'agent-message');
+    messageDiv.innerHTML = `<div class="message-content">${renderMarkdown(text)}</div>`;
     chatHistory.appendChild(messageDiv);
     chatHistory.scrollTop = chatHistory.scrollHeight;
 }
@@ -271,43 +270,75 @@ function renderSuggestions(suggestions) {
     chatHistory.scrollTop = chatHistory.scrollHeight;
 }
 
-// Handle Form Submission
+// Handle Form Submission — streaming version
 chatForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const message = chatInput.value.trim();
     if (!message) return;
-    
+
     chatInput.value = '';
     appendMessage('user', message);
-    
     showTypingIndicator();
-    
+
+    let messageDiv = null;
+    let contentDiv = null;
+    let fullText = '';
+    let firstChunk = true;
+
     try {
-        const res = await fetch('/api/chat', {
+        const res = await fetch('/api/chat/stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                message: message,
-                session_id: sessionId,
-                api_key: geminiApiKey || null
-            })
+            body: JSON.stringify({ message, session_id: sessionId, api_key: geminiApiKey || null })
         });
-        
-        hideTypingIndicator();
 
-        if (res.ok) {
-            const data = await res.json();
-            appendMessage('agent', data.response);
-            if (data.suggestions && data.suggestions.length) {
-                renderSuggestions(data.suggestions);
-            }
-            if (data.itinerary) {
-                updateItineraryUI(data.itinerary);
-            }
-        } else {
-            const errData = await res.json();
-            appendMessage('agent', `Sorry, something went wrong on the server: ${errData.detail || 'Internal Error'}`);
+        if (!res.ok) {
+            hideTypingIndicator();
+            const errData = await res.json().catch(() => ({}));
+            appendMessage('agent', `Sorry, something went wrong: ${errData.detail || 'Internal Error'}`);
+            return;
         }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                let data;
+                try { data = JSON.parse(line.slice(6)); } catch { continue; }
+
+                if (data.text) {
+                    if (firstChunk) { hideTypingIndicator(); firstChunk = false; }
+                    if (!messageDiv) {
+                        messageDiv = document.createElement('div');
+                        messageDiv.classList.add('message', 'agent-message');
+                        contentDiv = document.createElement('div');
+                        contentDiv.classList.add('message-content');
+                        messageDiv.appendChild(contentDiv);
+                        chatHistory.appendChild(messageDiv);
+                    }
+                    fullText += data.text;
+                    contentDiv.innerHTML = renderMarkdown(fullText);
+                    chatHistory.scrollTop = chatHistory.scrollHeight;
+                }
+
+                if (data.done) {
+                    if (data.suggestions && data.suggestions.length) renderSuggestions(data.suggestions);
+                    if (data.itinerary) updateItineraryUI(data.itinerary);
+                }
+            }
+        }
+
+        if (firstChunk) hideTypingIndicator(); // safety: hide if no text arrived
     } catch (error) {
         hideTypingIndicator();
         appendMessage('agent', 'Connection error. Please ensure the backend server is running.');

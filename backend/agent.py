@@ -526,13 +526,18 @@ class ConversationalAgent:
         )
 
     async def get_response(self, user_message: str, api_key: Optional[str] = None) -> str:
-        # Card actions bypass Gemini — they rely on cached state (flight/hotel IDs)
-        if self._is_card_action(user_message):
-            return await self._run_mock_agent(user_message)
+        effective_key = api_key or self.gemini_api_key
+
+        # Card-click actions and pending-camp travel-info replies use the direct
+        # state-aware handler. We still inject the exchange into Gemini's history
+        # so it stays in sync and knows the camp/flight/hotel was already chosen.
+        if self._is_card_action(user_message) or self.state.get("_pending_camp"):
+            response = await self._run_mock_agent(user_message)
+            self.state["history"].append({"role": "user", "parts": [{"text": user_message}]})
+            self.state["history"].append({"role": "model", "parts": [{"text": response}]})
+            return response
 
         self.state["history"].append({"role": "user", "parts": [{"text": user_message}]})
-        # Use frontend key first; fall back to server-side key; fall back to mock agent
-        effective_key = api_key or self.gemini_api_key
         if not effective_key:
             return await self._run_mock_agent(user_message)
         return await self._run_gemini_agent(effective_key)
@@ -958,10 +963,159 @@ class ConversationalAgent:
             ]
         return []
 
+    async def _call_gemini(self, api_key: str, payload: dict) -> Optional[httpx.Response]:
+        """Try gemini-2.5-flash, fall back to gemini-2.0-flash on 503/429."""
+        base = "https://generativelanguage.googleapis.com/v1beta/models"
+        models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash-lite"]
+        for model in models:
+            url = f"{base}/{model}:generateContent?key={api_key}"
+            for attempt in range(3):
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(url, json=payload, headers={"Content-Type": "application/json"})
+                if response.status_code not in (429, 503):
+                    break
+                await __import__("asyncio").sleep(2 ** attempt)
+            if response.status_code == 200:
+                return response
+            status = response.status_code
+            try:
+                err_msg = response.json().get("error", {}).get("message", response.text[:200])
+            except Exception:
+                err_msg = response.text[:200]
+            print(f"[GEMINI] model={model} status={status} err={err_msg}")
+            if status not in (429, 503):
+                # Auth or bad-request error — no point trying next model
+                return response
+        return response  # last response (both models failed)
+
+    async def get_response_stream(self, user_message: str, api_key: Optional[str] = None):
+        """Async generator yielding {"text": "..."} chunks, then {"done": True, ...}."""
+        effective_key = api_key or self.gemini_api_key
+
+        if self._is_card_action(user_message) or self.state.get("_pending_camp"):
+            response = await self._run_mock_agent(user_message)
+            self.state["history"].append({"role": "user", "parts": [{"text": user_message}]})
+            self.state["history"].append({"role": "model", "parts": [{"text": response}]})
+            yield {"text": response}
+            return
+
+        self.state["history"].append({"role": "user", "parts": [{"text": user_message}]})
+
+        if not effective_key:
+            response = await self._run_mock_agent(user_message)
+            yield {"text": response}
+            return
+
+        async for chunk in self._stream_gemini_agent(effective_key):
+            yield chunk
+
+    async def _stream_gemini_agent(self, api_key: str):
+        """Streams Gemini tokens; executes tool calls internally between rounds."""
+        import asyncio
+        self.state["_last_suggestions"] = []
+        contents = self.state["history"]
+        base = "https://generativelanguage.googleapis.com/v1beta/models"
+        models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash-lite"]
+
+        for _ in range(5):
+            payload = {
+                "contents": contents,
+                "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                "tools": GEMINI_TOOLS,
+            }
+
+            text_parts: List[str] = []
+            func_parts: List[Dict] = []
+            streamed_any = False
+            got_response = False
+
+            for model in models:
+                url = f"{base}/{model}:streamGenerateContent?alt=sse&key={api_key}"
+                text_parts, func_parts = [], []
+
+                try:
+                    async with httpx.AsyncClient(timeout=60.0) as client:
+                        async with client.stream("POST", url, json=payload, headers={"Content-Type": "application/json"}) as resp:
+                            if resp.status_code in (429, 503):
+                                await resp.aread()
+                                await asyncio.sleep(1)
+                                continue
+                            if resp.status_code != 200:
+                                body = await resp.aread()
+                                try:
+                                    err_msg = json.loads(body).get("error", {}).get("message", "")
+                                except Exception:
+                                    err_msg = body.decode()[:200]
+                                print(f"[GEMINI STREAM] {model} {resp.status_code}: {err_msg}")
+                                if resp.status_code in (401, 403):
+                                    yield {"text": f"Error: API key rejected — {err_msg}"}
+                                    return
+                                continue
+
+                            async for line in resp.aiter_lines():
+                                if not line.startswith("data: "):
+                                    continue
+                                data_str = line[6:].strip()
+                                if not data_str:
+                                    continue
+                                try:
+                                    chunk = json.loads(data_str)
+                                except json.JSONDecodeError:
+                                    continue
+                                candidates = chunk.get("candidates", [])
+                                if not candidates:
+                                    continue
+                                for part in candidates[0].get("content", {}).get("parts", []):
+                                    if "text" in part and part["text"]:
+                                        text_parts.append(part["text"])
+                                        if not func_parts:
+                                            yield {"text": part["text"]}
+                                            streamed_any = True
+                                    elif "functionCall" in part:
+                                        func_parts.append(part)
+
+                            got_response = True
+                            break
+                except Exception as e:
+                    print(f"[GEMINI STREAM] {model} exception: {e}")
+                    continue
+
+            if not got_response:
+                fallback = await self._run_mock_agent(contents[-1]["parts"][0]["text"])
+                if not streamed_any:
+                    yield {"text": fallback}
+                return
+
+            full_content: Dict[str, Any] = {"role": "model", "parts": []}
+            if text_parts:
+                full_content["parts"].append({"text": "".join(text_parts)})
+            full_content["parts"].extend(func_parts)
+            self.state["history"].append(full_content)
+
+            function_calls = [p["functionCall"] for p in func_parts]
+            if not function_calls:
+                return  # text already streamed
+
+            tool_content: Dict[str, Any] = {"role": "function", "parts": []}
+            round_suggestions: List[Dict] = []
+            for call in function_calls:
+                name = call.get("name")
+                args = call.get("args", {})
+                result = await execute_tool(name, args, self.state, aviasales=self.aviasales, booking=self.booking)
+                tool_content["parts"].append({"functionResponse": {"name": name, "response": result}})
+                round_suggestions += self._suggestions_from_tool(name, result)
+
+            if round_suggestions:
+                self.state["_last_suggestions"] = round_suggestions
+
+            self.state["history"].append(tool_content)
+            contents = self.state["history"]
+
+        if not streamed_any:
+            yield {"text": "Max iterations reached without a final response."}
+
     async def _run_gemini_agent(self, api_key: str) -> str:
         """Agentic loop using Gemini Function Calling with real flight/hotel APIs."""
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-        headers = {"Content-Type": "application/json"}
         contents = self.state["history"]
         self.state["_last_suggestions"] = []
 
@@ -972,22 +1126,21 @@ class ConversationalAgent:
                 "tools": GEMINI_TOOLS,
             }
 
-            # Retry up to 3 times on transient 503/429 errors
-            response = None
-            for attempt in range(3):
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.post(url, json=payload, headers=headers)
-                if response.status_code not in (429, 503):
-                    break
-                await __import__("asyncio").sleep(2 ** attempt)
+            response = await self._call_gemini(api_key, payload)
 
             if response.status_code != 200:
                 status = response.status_code
+                try:
+                    err_msg = response.json().get("error", {}).get("message", response.text[:200])
+                except Exception:
+                    err_msg = response.text[:200]
                 if status in (401, 403):
-                    return "Error: Invalid or unauthorized Gemini API key. Please check your key in Settings."
+                    return f"Error: Gemini API key rejected ({status}): {err_msg}"
                 if status in (429, 503):
-                    return "Gemini is temporarily busy — please try again in a moment."
-                return f"Error: Gemini API returned {status}. Please try again."
+                    # Both models overloaded — fall back to mock agent silently
+                    print(f"[GEMINI] Both models overloaded, falling back to mock agent")
+                    return await self._run_mock_agent(self.state["history"][-1]["parts"][0]["text"])
+                return f"Error: Gemini API returned {status}: {err_msg}"
 
             res_data = response.json()
             candidates = res_data.get("candidates", [])

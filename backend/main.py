@@ -1,8 +1,9 @@
 import os
+import json
 from dotenv import load_dotenv
 load_dotenv()  # reads .env from the project root
 from fastapi import FastAPI, HTTPException, Header
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, List
@@ -45,6 +46,36 @@ async def get_config():
         "aviasales_active": bool(AVIASALES_TOKEN),
         "booking_active": bool(BOOKING_AFFILIATE_ID and BOOKING_API_KEY),
     }
+
+@app.post("/api/chat/stream")
+async def chat_stream_endpoint(req: ChatRequest):
+    session_id = req.session_id
+    if session_id not in agents_store:
+        agents_store[session_id] = ConversationalAgent(
+            session_id,
+            gemini_api_key=GEMINI_API_KEY,
+            aviasales_token=AVIASALES_TOKEN,
+            aviasales_marker=AVIASALES_MARKER,
+            booking_affiliate_id=BOOKING_AFFILIATE_ID,
+            booking_api_key=BOOKING_API_KEY,
+        )
+    agent = agents_store[session_id]
+
+    async def generate():
+        try:
+            async for chunk in agent.get_response_stream(req.message, api_key=req.api_key):
+                yield f"data: {json.dumps(chunk)}\n\n"
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            yield f"data: {json.dumps({'text': f'Error: {e}'})}\n\n"
+        finally:
+            yield f"data: {json.dumps({'done': True, 'itinerary': agent.state.get('itinerary'), 'suggestions': agent.state.get('_last_suggestions') or None})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_endpoint(req: ChatRequest):
