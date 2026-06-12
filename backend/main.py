@@ -3,7 +3,7 @@ import json
 from dotenv import load_dotenv
 load_dotenv()  # reads .env from the project root
 from fastapi import FastAPI, HTTPException, Header
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, List
@@ -215,15 +215,3 @@ Created via Sportcation Travel Agent.
         filename=filename
     )
 
-# Serve Frontend files
-@app.get("/", response_class=HTMLResponse)
-async def serve_index():
-    return FileResponse("/home/tsy629/git/Heill/frontend/index.html")
-
-@app.get("/style.css")
-async def serve_css():
-    return FileResponse("/home/tsy629/git/Heill/frontend/style.css")
-
-@app.get("/app.js")
-async def serve_js():
-    return FileResponse("/home/tsy629/git/Heill/frontend/app.js")
