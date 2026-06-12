@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()  # reads .env from the project root
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, List
@@ -210,8 +211,12 @@ Created via Sportcation Travel Agent.
             f.write(report_content)
             
     return FileResponse(
-        filepath, 
-        media_type="application/octet-stream" if format == "ics" else "text/plain", 
+        filepath,
+        media_type="application/octet-stream" if format == "ics" else "text/plain",
         filename=filename
     )
+
+_public_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public")
+if os.path.isdir(_public_dir):
+    app.mount("/", StaticFiles(directory=_public_dir, html=True), name="static")
 
