@@ -217,6 +217,7 @@ Created via Sportcation Travel Agent.
     )
 
 _public_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public")
+print(f"[STATIC] public dir: {_public_dir} exists={os.path.isdir(_public_dir)}")
 if os.path.isdir(_public_dir):
     app.mount("/", StaticFiles(directory=_public_dir, html=True), name="static")
 
