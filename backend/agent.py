@@ -1210,9 +1210,19 @@ class ConversationalAgent:
     async def get_response_stream(self, user_message: str, api_key: Optional[str] = None):
         """Async generator yielding {"text": "..."} chunks, then {"done": True, ...}."""
         effective_key = api_key or self.gemini_api_key
+        msg_lower = user_message.lower()
 
         if self._is_card_action(user_message) or self.state.get("_pending_camp"):
             response = await self._run_mock_agent(user_message)
+            self.state["history"].append({"role": "user", "parts": [{"text": user_message}]})
+            self.state["history"].append({"role": "model", "parts": [{"text": response}]})
+            yield {"text": response}
+            return
+
+        # Fast path: China train searches bypass Gemini entirely to avoid
+        # double-round-trip latency (which exceeds Vercel's 10s timeout).
+        if any(w in msg_lower for w in _TRAIN_WORDS):
+            response = await self._handle_china_train_search(user_message, msg_lower)
             self.state["history"].append({"role": "user", "parts": [{"text": user_message}]})
             self.state["history"].append({"role": "model", "parts": [{"text": response}]})
             yield {"text": response}
