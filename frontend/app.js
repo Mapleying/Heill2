@@ -225,6 +225,7 @@ function renderSuggestions(suggestions) {
     const camps   = suggestions.filter(s => s.type === 'camp');
     const flights = suggestions.filter(s => s.type === 'flight');
     const hotels  = suggestions.filter(s => s.type === 'hotel');
+    const trains  = suggestions.filter(s => s.type === 'train');
 
     function makeSection(items, label) {
         if (!items.length) return null;
@@ -236,6 +237,7 @@ function renderSuggestions(suggestions) {
         items.forEach(s => {
             const card = document.createElement('div');
             card.classList.add('suggestion-card', `suggestion-${s.type}`);
+            const hint = s.type === 'train' ? 'Click for details' : 'Click to add to itinerary';
             card.innerHTML = `
                 <div class="sc-top">
                     <span class="sc-price">${escapeHtml(s.price)}</span>
@@ -245,7 +247,7 @@ function renderSuggestions(suggestions) {
                 </div>
                 <span class="sc-label">${escapeHtml(s.label)}</span>
                 <span class="sc-sub">${escapeHtml(s.sublabel || '')}</span>
-                <span class="sc-hint">Click to add to itinerary</span>
+                <span class="sc-hint">${hint}</span>
             `;
             card.addEventListener('click', e => {
                 if (!e.target.closest('.sc-book-link')) sendSuggestion(s.action);
@@ -262,9 +264,11 @@ function renderSuggestions(suggestions) {
     const cs = makeSection(camps,   '⛺ Choose a Camp');
     const fs = makeSection(flights, '✈️ Flights');
     const hs = makeSection(hotels,  '🏨 Hotels');
+    const ts = makeSection(trains,  '🚄 Trains');
     if (cs) container.appendChild(cs);
     if (fs) container.appendChild(fs);
     if (hs) container.appendChild(hs);
+    if (ts) container.appendChild(ts);
 
     chatHistory.appendChild(container);
     chatHistory.scrollTop = chatHistory.scrollHeight;

@@ -870,6 +870,7 @@ body.light-theme #gemini-key-input {
 .suggestion-camp   { border-left: 3px solid #f59e0b; }
 .suggestion-flight { border-left: 3px solid #34d399; }
 .suggestion-hotel  { border-left: 3px solid #818cf8; }
+.suggestion-train  { border-left: 3px solid #f87171; }
 
 .sc-top {
     display: flex;

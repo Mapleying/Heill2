@@ -7,9 +7,11 @@ from backend.database import (
     search_camps, get_camp_details, get_airports_for_camp,
     get_camp_coordinates_by_city,
     search_flights_mock, search_hotels_mock,
+    search_china_trains_mock,
 )
 from backend.services.aviasales_client import AviasalesClient
 from backend.services.booking_client import BookingClient
+from backend.services.china_train_client import ChinaTrainClient
 
 # Tool Schemas for Gemini Function Calling
 GEMINI_TOOLS = [
@@ -105,6 +107,32 @@ GEMINI_TOOLS = [
                 }
             },
             {
+                "name": "search_china_trains",
+                "description": "Search for high-speed rail (CRH/HSR) trains between Chinese cities. Use when the user wants to travel by train within China, e.g. to reach an international airport hub or when planning travel between Chinese cities.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "origin_city": {
+                            "type": "STRING",
+                            "description": "Departure city in China (e.g. Beijing, Shanghai, Guangzhou, Chengdu)"
+                        },
+                        "destination_city": {
+                            "type": "STRING",
+                            "description": "Destination city in China (e.g. Shanghai, Beijing, Shenzhen)"
+                        },
+                        "date": {
+                            "type": "STRING",
+                            "description": "Travel date (YYYY-MM-DD). Defaults to today if omitted."
+                        },
+                        "seat_class": {
+                            "type": "STRING",
+                            "description": "Optional seat class: second_class, first_class, business"
+                        }
+                    },
+                    "required": ["origin_city", "destination_city"]
+                }
+            },
+            {
                 "name": "create_itinerary_draft",
                 "description": "Assemble selected camp session, flight, and hotel into a unified itinerary. Runs conflict checks.",
                 "parameters": {
@@ -146,14 +174,21 @@ If the user wants to change any of these details later, update them and re-searc
 - Call search_flights using the user's departure city (origin_iata) and their preferred departure date.
 - Call search_hotels using the camp city and camp session dates for check-in/check-out.
 - Present results clearly with prices. Let the user choose.
+- If the user is departing from a Chinese city, proactively offer to search for a train (search_china_trains) to a major hub airport (e.g. Chengdu → Beijing South for international connection).
 
-### 4. Itinerary Assembly
+### 4. China Train Search
+- If the user asks about trains within China, call search_china_trains **immediately** — do NOT ask for the date first.
+- Use today's date or the soonest plausible date if the user hasn't specified one.
+- G trains = high-speed (350 km/h); C trains = intercity express; D trains = fast (200 km/h).
+- Present results with train number, departure/arrival times, duration, seat class, and price in CNY and EUR.
+
+### 5. Itinerary Assembly
 - Once a flight and hotel are chosen, call create_itinerary_draft.
 - Check for scheduling conflicts and flag them.
 - Summarise with total estimated cost and booking deep-links.
 
 ## Rules
-- NEVER invent camps, flights, or hotels. All data must come from tool results.
+- NEVER invent camps, flights, hotels, or trains. All data must come from tool results.
 - Skill level taxonomy: Tennis = NTRP 1.0–7.0 | Ski = Beginner/Intermediate/Advanced/Expert | Surf = Beginner/Intermediate/Advanced
 - If a search returns no results, say so clearly and offer alternatives (different dates, nearby airports).
 - Be warm, concise, and proactive — anticipate what the user needs next.
@@ -166,6 +201,7 @@ async def execute_tool(
     state: Dict[str, Any],
     aviasales: Optional[AviasalesClient] = None,
     booking: Optional[BookingClient] = None,
+    china_train: Optional[ChinaTrainClient] = None,
 ) -> Dict[str, Any]:
     if name == "search_sport_camps":
         camps = search_camps(
@@ -243,6 +279,25 @@ async def execute_tool(
             state.setdefault("_hotel_cache", {})[h["hotel_id"]] = h
 
         return {"hotels": hotels}
+
+    elif name == "search_china_trains":
+        origin = args.get("origin_city", "")
+        dest   = args.get("destination_city", "")
+        date   = args.get("date") or _default_date(0)
+        seat   = args.get("seat_class")
+
+        if china_train:
+            try:
+                trains = await china_train.search_trains(origin, dest, date, seat)
+            except Exception:
+                trains = search_china_trains_mock(origin, dest, date, seat)
+        else:
+            trains = search_china_trains_mock(origin, dest, date, seat)
+
+        for t in trains:
+            state.setdefault("_train_cache", {})[t["train_id"]] = t
+
+        return {"trains": trains}
 
     elif name == "create_itinerary_draft":
         camp_id = args.get("camp_id")
@@ -478,6 +533,49 @@ _CHECKOUT_WORDS = [
     "complete", "ready to book", "total cost", "how much total",
 ]
 
+# Chinese city IATA codes → city name (for train hub suggestions)
+_IATA_TO_CHINA_CITY: Dict[str, str] = {
+    "PEK": "Beijing", "PKX": "Beijing",
+    "PVG": "Shanghai", "SHA": "Shanghai",
+    "CAN": "Guangzhou",
+    "SZX": "Shenzhen",
+    "CTU": "Chengdu",
+    "CKG": "Chongqing",
+    "XIY": "Xi'an",
+    "HGH": "Hangzhou",
+    "NKG": "Nanjing",
+    "WUH": "Wuhan",
+    "TSN": "Tianjin",
+    "CSX": "Changsha",
+    "CGO": "Zhengzhou",
+    "TAO": "Qingdao",
+    "TNA": "Jinan",
+    "HFE": "Hefei",
+    "KMG": "Kunming",
+    "KWE": "Guiyang",
+    "NNG": "Nanning",
+    "HRB": "Harbin",
+    "SHE": "Shenyang",
+    "DLC": "Dalian",
+    "XMN": "Xiamen",
+    "FOC": "Fuzhou",
+}
+
+# When departing from a Chinese city airport, suggest train to this hub city instead
+# (e.g. from Chengdu, take HSR to Beijing for international flight)
+_CHINA_CITY_HUB: Dict[str, str] = {
+    "CTU": "Beijing", "CKG": "Beijing",
+    "XIY": "Beijing", "KMG": "Beijing",
+    "KWE": "Guangzhou", "NNG": "Guangzhou",
+    "CSX": "Guangzhou", "WUH": "Beijing",
+}
+
+_TRAIN_WORDS = [
+    "train", "高铁", "火车", "crh", "hsr", "bullet train", "high speed rail",
+    "high-speed rail", "railway", "rail", "g train", "d train", "c train",
+    "gaotie", "huoche",
+]
+
 
 class ConversationalAgent:
     def __init__(
@@ -488,6 +586,8 @@ class ConversationalAgent:
         aviasales_marker: Optional[str] = None,
         booking_affiliate_id: Optional[str] = None,
         booking_api_key: Optional[str] = None,
+        china_train_api_key: Optional[str] = None,
+        china_train_affiliate_id: Optional[str] = None,
     ):
         self.session_id = session_id
         self.gemini_api_key = gemini_api_key  # server-side key; used when frontend provides none
@@ -499,11 +599,13 @@ class ConversationalAgent:
             BookingClient(booking_affiliate_id, booking_api_key)
             if (booking_affiliate_id and booking_api_key) else None
         )
+        self.china_train = ChinaTrainClient(china_train_api_key, china_train_affiliate_id)
         self.state: Dict[str, Any] = {
             "history": [],
             "itinerary": None,
             "_flight_cache": {},
             "_hotel_cache": {},
+            "_train_cache": {},
             "_last_suggestions": [],
             "_last_shown_camps": [],
             "_pending_camp": None,   # camp selected but awaiting travel info
@@ -521,7 +623,7 @@ class ConversationalAgent:
         return (
             lower.startswith("add flight ")
             or lower.startswith("add hotel ")
-            or lower.startswith("book ")
+            or (lower.startswith("book ") and not lower.startswith("book train "))
             or any(w in lower for w in _CHECKOUT_WORDS)
         )
 
@@ -755,6 +857,17 @@ class ConversationalAgent:
             },
             self.state, booking=self.booking,
         )
+
+        # When departing from a Chinese city, also search trains to a major hub
+        china_hub = _CHINA_CITY_HUB.get(origin_iata)
+        if china_hub and china_hub != origin_iata:
+            hub_city = _IATA_TO_CHINA_CITY.get(origin_iata, "")
+            if hub_city:
+                await execute_tool(
+                    "search_china_trains",
+                    {"origin_city": hub_city, "destination_city": china_hub, "date": departure_date},
+                    self.state, china_train=self.china_train,
+                )
         flights = flight_result.get("flights", [])
         hotels  = hotel_result.get("hotels", [])
         data_note = " (live)" if self.aviasales else " (sample)"
@@ -789,6 +902,79 @@ class ConversationalAgent:
             f"**{n_h} hotel{'s' if n_h != 1 else ''}** nearby.\n"
             f"Click a card below to add it, or type **checkout** when ready."
         )
+
+    # ── China train handler ───────────────────────────────────────────────────
+
+    async def _handle_china_train_search(self, msg: str, msg_lower: str) -> str:
+        import re as _re
+        from backend.database import CHINA_STATION_MAP
+
+        # Extract origin and destination from message
+        # Patterns: "from X to Y", "train to Y from X"
+        origin_city = None
+        dest_city   = None
+
+        m = _re.search(
+            r'(?:from|depart(?:ing)? from)\s+([A-Za-z\']+)\s+to\s+([A-Za-z\']+)\b',
+            msg, _re.IGNORECASE
+        )
+        if m:
+            origin_city = m.group(1).strip()
+            dest_city   = m.group(2).strip()
+        else:
+            m2 = _re.search(
+                r'\bto\s+([A-Za-z\']+)\s+from\s+([A-Za-z\']+)\b',
+                msg, _re.IGNORECASE
+            )
+            if m2:
+                dest_city   = m2.group(1).strip()
+                origin_city = m2.group(2).strip()
+
+        # Validate against known stations
+        known_cities = list(CHINA_STATION_MAP.keys())
+        if not origin_city or not dest_city:
+            # Ask for clarification
+            examples = ", ".join(c.title() for c in list(CHINA_STATION_MAP.keys())[:8])
+            return (
+                "I can search high-speed rail (CRH) trains between Chinese cities!\n\n"
+                f"Just tell me the **origin** and **destination**, e.g.:\n"
+                f"- \"Search trains from Beijing to Shanghai\"\n"
+                f"- \"Find a train from Guangzhou to Shenzhen on July 10\"\n\n"
+                f"Supported cities include: {examples}, and more."
+            )
+
+        # Parse date from message
+        date = self._parse_departure_date(msg_lower, _default_date(1))
+
+        result = await execute_tool(
+            "search_china_trains",
+            {"origin_city": origin_city, "destination_city": dest_city, "date": date},
+            self.state, china_train=self.china_train,
+        )
+        trains = result.get("trains", [])
+        if not trains:
+            return (
+                f"No trains found from **{origin_city.title()}** to **{dest_city.title()}** on {date}.\n\n"
+                f"Try a different date or check that both cities have HSR stations."
+            )
+
+        self.state["_last_suggestions"] = self._suggestions_from_tool("search_china_trains", result)
+
+        orig_station = trains[0]["origin_station"]
+        dest_station = trains[0]["destination_station"]
+        lines = [
+            f"Found **{len(trains)} train{'s' if len(trains) > 1 else ''}** "
+            f"from **{orig_station}** → **{dest_station}** on {date}:\n"
+        ]
+        for t in trains:
+            lines.append(
+                f"- **{t['train_number']}** ({t['train_type']}) · "
+                f"{t['departure_time'][11:]} → {t['arrival_time'][11:]} · "
+                f"{t['duration']} · {t['seat_class']} · "
+                f"¥{t['price_cny']:.0f} (~€{t['price_eur']:.0f})"
+            )
+        lines.append("\nClick a card to book, or ask me to search a different class or date.")
+        return "\n".join(lines)
 
     # ── Main mock agent ───────────────────────────────────────────────────────
 
@@ -861,9 +1047,30 @@ class ConversationalAgent:
             name = self.state["itinerary"]["hotel"]["name"] if self.state["itinerary"].get("hotel") else "Hotel"
             return f"**{name}** added! Type **checkout** to see your full itinerary and booking links."
 
+        # 3b. Book train (card click sends "Book train <id>")
+        import re as _re
+        if msg_lower.startswith("book train "):
+            ids = _re.findall(r'crh-[\w\-]+', msg_lower)
+            train_id = ids[0] if ids else None
+            train = self.state.get("_train_cache", {}).get(train_id)
+            if train:
+                return (
+                    f"**{train['train_number']}** ({train['train_type']}) · "
+                    f"{train['origin_station']} → {train['destination_station']}\n"
+                    f"Departs {train['departure_time']} · Arrives {train['arrival_time']} · "
+                    f"{train['duration']} · {train['seat_class']}\n"
+                    f"Price: ¥{train['price_cny']:.0f} (~€{train['price_eur']:.0f})\n\n"
+                    f"[Book on Trip.com]({train['booking_link']})"
+                )
+            return "Couldn't find that train. Please search again to get fresh results."
+
         # 4. Travel info reply — user is answering the departure questions
         if self.state.get("_pending_camp"):
             return await self._handle_travel_info(msg, msg_lower)
+
+        # 4b. China train search intent
+        if any(w in msg_lower for w in _TRAIN_WORDS):
+            return await self._handle_china_train_search(msg, msg_lower)
 
         # 5. Camp selected — by name, city, ID, or natural selection after seeing a list
         selected = self._find_camp_in_message(msg_lower)
@@ -960,6 +1167,18 @@ class ConversationalAgent:
                     "booking_link": h.get("booking_link", ""),
                 }
                 for h in result.get("hotels", [])[:3]
+            ]
+        if name == "search_china_trains":
+            return [
+                {
+                    "type": "train",
+                    "label": f"{t['train_number']} ({t['train_type']}) · {t['origin_city']} → {t['destination_city']}",
+                    "sublabel": f"{t['departure_time'][11:]} → {t['arrival_time'][11:]} · {t['duration']} · {t['seat_class']}",
+                    "price": f"¥{t['price_cny']:.0f} (~€{t['price_eur']:.0f})",
+                    "action": f"Book train {t['train_id']}",
+                    "booking_link": t.get("booking_link", ""),
+                }
+                for t in result.get("trains", [])[:4]
             ]
         return []
 
@@ -1101,7 +1320,7 @@ class ConversationalAgent:
             for call in function_calls:
                 name = call.get("name")
                 args = call.get("args", {})
-                result = await execute_tool(name, args, self.state, aviasales=self.aviasales, booking=self.booking)
+                result = await execute_tool(name, args, self.state, aviasales=self.aviasales, booking=self.booking, china_train=self.china_train)
                 tool_content["parts"].append({"functionResponse": {"name": name, "response": result}})
                 round_suggestions += self._suggestions_from_tool(name, result)
 
@@ -1169,6 +1388,7 @@ class ConversationalAgent:
                     self.state,
                     aviasales=self.aviasales,
                     booking=self.booking,
+                    china_train=self.china_train,
                 )
                 tool_content["parts"].append({
                     "functionResponse": {"name": name, "response": tool_result}

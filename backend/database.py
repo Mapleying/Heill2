@@ -287,3 +287,241 @@ def _search_hotels_mock_data(camp_lat, camp_lng, city, amenities=None):
     results = [h for h in MOCK_HOTELS if not amenities or any(a in h["amenities"] for a in amenities)]
     results.sort(key=lambda h: (not h["sport_partner"], h["price_per_night_eur"]))
     return results
+
+
+# ── China train data ──────────────────────────────────────────────────────────
+
+CNY_TO_EUR = 1 / 7.85  # approximate exchange rate
+
+CHINA_STATION_MAP: Dict[str, Dict] = {
+    "beijing":   {"station": "Beijing South",      "code": "BJP", "lat": 39.8652, "lng": 116.3783},
+    "shanghai":  {"station": "Shanghai Hongqiao",  "code": "SHH", "lat": 31.1977, "lng": 121.3287},
+    "guangzhou": {"station": "Guangzhou South",    "code": "GZQ", "lat": 22.9064, "lng": 113.2654},
+    "shenzhen":  {"station": "Shenzhen North",     "code": "IOQ", "lat": 22.6082, "lng": 114.0305},
+    "chengdu":   {"station": "Chengdu East",       "code": "ICW", "lat": 30.6566, "lng": 104.1437},
+    "chongqing": {"station": "Chongqing North",    "code": "CQW", "lat": 29.7280, "lng": 106.5510},
+    "xian":      {"station": "Xi'an North",        "code": "IAO", "lat": 34.3792, "lng": 108.8388},
+    "xi'an":     {"station": "Xi'an North",        "code": "IAO", "lat": 34.3792, "lng": 108.8388},
+    "hangzhou":  {"station": "Hangzhou East",      "code": "HZH", "lat": 30.2936, "lng": 120.2150},
+    "nanjing":   {"station": "Nanjing South",      "code": "NJH", "lat": 31.9627, "lng": 118.7968},
+    "wuhan":     {"station": "Wuhan",              "code": "WHN", "lat": 30.5951, "lng": 114.2816},
+    "tianjin":   {"station": "Tianjin South",      "code": "TJP", "lat": 39.0152, "lng": 117.0778},
+    "changsha":  {"station": "Changsha South",     "code": "CSQ", "lat": 27.8564, "lng": 113.0194},
+    "zhengzhou": {"station": "Zhengzhou East",     "code": "ZZH", "lat": 34.7614, "lng": 113.8564},
+    "suzhou":    {"station": "Suzhou",             "code": "SZH", "lat": 31.2990, "lng": 120.6172},
+    "qingdao":   {"station": "Qingdao North",      "code": "QDH", "lat": 36.2468, "lng": 120.4326},
+    "jinan":     {"station": "Jinan West",         "code": "JNK", "lat": 36.6583, "lng": 116.8164},
+    "hefei":     {"station": "Hefei South",        "code": "HFH", "lat": 31.7320, "lng": 117.2278},
+    "nanchang":  {"station": "Nanchang West",      "code": "NCG", "lat": 28.6884, "lng": 115.8316},
+    "fuzhou":    {"station": "Fuzhou",             "code": "FZS", "lat": 26.0816, "lng": 119.2824},
+    "xiamen":    {"station": "Xiamen North",       "code": "XMH", "lat": 24.6490, "lng": 117.9860},
+    "kunming":   {"station": "Kunming South",      "code": "KMQ", "lat": 24.8478, "lng": 102.7286},
+    "guiyang":   {"station": "Guiyang North",      "code": "GIH", "lat": 26.6466, "lng": 106.7034},
+    "nanning":   {"station": "Nanning East",       "code": "NNH", "lat": 22.8040, "lng": 108.3640},
+    "harbin":    {"station": "Harbin West",        "code": "HBW", "lat": 45.7462, "lng": 126.6023},
+    "shenyang":  {"station": "Shenyang North",     "code": "SYO", "lat": 41.8063, "lng": 123.4394},
+    "dalian":    {"station": "Dalian North",       "code": "DLH", "lat": 38.9652, "lng": 121.6417},
+}
+
+# Pre-defined realistic routes: (origin_key, dest_key) → list of trains
+# Prices in CNY; duration in minutes
+_TRAIN_ROUTES: Dict[tuple, List[Dict]] = {
+    ("beijing", "shanghai"): [
+        {"number": "G1",   "type": "G", "dep": "07:00", "arr": "11:38", "dur": 278, "2nd": 553,  "1st": 933,  "biz": 1748},
+        {"number": "G5",   "type": "G", "dep": "09:00", "arr": "13:48", "dur": 288, "2nd": 553,  "1st": 933,  "biz": 1748},
+        {"number": "G13",  "type": "G", "dep": "13:05", "arr": "17:43", "dur": 278, "2nd": 553,  "1st": 933,  "biz": 1748},
+        {"number": "G17",  "type": "G", "dep": "16:00", "arr": "20:38", "dur": 278, "2nd": 553,  "1st": 933,  "biz": 1748},
+    ],
+    ("shanghai", "beijing"): [
+        {"number": "G2",   "type": "G", "dep": "07:00", "arr": "11:38", "dur": 278, "2nd": 553,  "1st": 933,  "biz": 1748},
+        {"number": "G6",   "type": "G", "dep": "09:05", "arr": "13:48", "dur": 283, "2nd": 553,  "1st": 933,  "biz": 1748},
+        {"number": "G14",  "type": "G", "dep": "12:55", "arr": "17:43", "dur": 288, "2nd": 553,  "1st": 933,  "biz": 1748},
+    ],
+    ("beijing", "guangzhou"): [
+        {"number": "G71",  "type": "G", "dep": "08:00", "arr": "16:28", "dur": 508, "2nd": 865,  "1st": 1397, "biz": 2748},
+        {"number": "G79",  "type": "G", "dep": "10:00", "arr": "18:28", "dur": 508, "2nd": 865,  "1st": 1397, "biz": 2748},
+    ],
+    ("guangzhou", "beijing"): [
+        {"number": "G72",  "type": "G", "dep": "08:00", "arr": "16:28", "dur": 508, "2nd": 865,  "1st": 1397, "biz": 2748},
+        {"number": "G80",  "type": "G", "dep": "12:00", "arr": "20:28", "dur": 508, "2nd": 865,  "1st": 1397, "biz": 2748},
+    ],
+    ("beijing", "xian"): [
+        {"number": "G85",  "type": "G", "dep": "07:58", "arr": "12:25", "dur": 267, "2nd": 515,  "1st": 826,  "biz": 1654},
+        {"number": "G87",  "type": "G", "dep": "09:00", "arr": "13:25", "dur": 265, "2nd": 515,  "1st": 826,  "biz": 1654},
+        {"number": "G653", "type": "G", "dep": "15:30", "arr": "19:56", "dur": 266, "2nd": 515,  "1st": 826,  "biz": 1654},
+    ],
+    ("xian", "beijing"): [
+        {"number": "G86",  "type": "G", "dep": "08:00", "arr": "12:25", "dur": 265, "2nd": 515,  "1st": 826,  "biz": 1654},
+        {"number": "G654", "type": "G", "dep": "14:00", "arr": "18:25", "dur": 265, "2nd": 515,  "1st": 826,  "biz": 1654},
+    ],
+    ("xi'an", "beijing"): [
+        {"number": "G86",  "type": "G", "dep": "08:00", "arr": "12:25", "dur": 265, "2nd": 515,  "1st": 826,  "biz": 1654},
+        {"number": "G654", "type": "G", "dep": "14:00", "arr": "18:25", "dur": 265, "2nd": 515,  "1st": 826,  "biz": 1654},
+    ],
+    ("beijing", "xi'an"): [
+        {"number": "G85",  "type": "G", "dep": "07:58", "arr": "12:25", "dur": 267, "2nd": 515,  "1st": 826,  "biz": 1654},
+        {"number": "G87",  "type": "G", "dep": "09:00", "arr": "13:25", "dur": 265, "2nd": 515,  "1st": 826,  "biz": 1654},
+    ],
+    ("beijing", "wuhan"): [
+        {"number": "G501", "type": "G", "dep": "08:06", "arr": "12:00", "dur": 234, "2nd": 465,  "1st": 745,  "biz": 1520},
+        {"number": "G71",  "type": "G", "dep": "08:00", "arr": "11:58", "dur": 238, "2nd": 465,  "1st": 745,  "biz": 1520},
+    ],
+    ("wuhan", "beijing"): [
+        {"number": "G502", "type": "G", "dep": "08:00", "arr": "12:00", "dur": 240, "2nd": 465,  "1st": 745,  "biz": 1520},
+        {"number": "G72",  "type": "G", "dep": "13:00", "arr": "17:10", "dur": 250, "2nd": 465,  "1st": 745,  "biz": 1520},
+    ],
+    ("shanghai", "hangzhou"): [
+        {"number": "G7301","type": "G", "dep": "07:00", "arr": "08:02", "dur": 62,  "2nd": 73,   "1st": 116,  "biz": 232},
+        {"number": "G7303","type": "G", "dep": "09:30", "arr": "10:32", "dur": 62,  "2nd": 73,   "1st": 116,  "biz": 232},
+        {"number": "G7309","type": "G", "dep": "14:00", "arr": "15:02", "dur": 62,  "2nd": 73,   "1st": 116,  "biz": 232},
+        {"number": "G7325","type": "G", "dep": "18:30", "arr": "19:32", "dur": 62,  "2nd": 73,   "1st": 116,  "biz": 232},
+    ],
+    ("hangzhou", "shanghai"): [
+        {"number": "G7302","type": "G", "dep": "07:30", "arr": "08:32", "dur": 62,  "2nd": 73,   "1st": 116,  "biz": 232},
+        {"number": "G7304","type": "G", "dep": "10:00", "arr": "11:02", "dur": 62,  "2nd": 73,   "1st": 116,  "biz": 232},
+        {"number": "G7326","type": "G", "dep": "19:00", "arr": "20:02", "dur": 62,  "2nd": 73,   "1st": 116,  "biz": 232},
+    ],
+    ("shanghai", "nanjing"): [
+        {"number": "G103", "type": "G", "dep": "07:07", "arr": "08:20", "dur": 73,  "2nd": 160,  "1st": 256,  "biz": 512},
+        {"number": "G109", "type": "G", "dep": "09:00", "arr": "10:18", "dur": 78,  "2nd": 160,  "1st": 256,  "biz": 512},
+        {"number": "G7001","type": "G", "dep": "12:05", "arr": "13:18", "dur": 73,  "2nd": 160,  "1st": 256,  "biz": 512},
+    ],
+    ("nanjing", "shanghai"): [
+        {"number": "G104", "type": "G", "dep": "07:30", "arr": "08:43", "dur": 73,  "2nd": 160,  "1st": 256,  "biz": 512},
+        {"number": "G110", "type": "G", "dep": "10:00", "arr": "11:13", "dur": 73,  "2nd": 160,  "1st": 256,  "biz": 512},
+    ],
+    ("guangzhou", "shenzhen"): [
+        {"number": "G6003","type": "G", "dep": "07:05", "arr": "07:33", "dur": 28,  "2nd": 75,   "1st": 120,  "biz": 240},
+        {"number": "G6007","type": "G", "dep": "09:00", "arr": "09:28", "dur": 28,  "2nd": 75,   "1st": 120,  "biz": 240},
+        {"number": "G6009","type": "G", "dep": "11:00", "arr": "11:28", "dur": 28,  "2nd": 75,   "1st": 120,  "biz": 240},
+        {"number": "G6021","type": "G", "dep": "18:00", "arr": "18:28", "dur": 28,  "2nd": 75,   "1st": 120,  "biz": 240},
+    ],
+    ("shenzhen", "guangzhou"): [
+        {"number": "G6004","type": "G", "dep": "07:30", "arr": "07:58", "dur": 28,  "2nd": 75,   "1st": 120,  "biz": 240},
+        {"number": "G6010","type": "G", "dep": "10:00", "arr": "10:28", "dur": 28,  "2nd": 75,   "1st": 120,  "biz": 240},
+        {"number": "G6022","type": "G", "dep": "17:00", "arr": "17:28", "dur": 28,  "2nd": 75,   "1st": 120,  "biz": 240},
+    ],
+    ("beijing", "tianjin"): [
+        {"number": "C2001","type": "C", "dep": "07:00", "arr": "07:31", "dur": 31,  "2nd": 55,   "1st": 88,   "biz": 176},
+        {"number": "C2005","type": "C", "dep": "08:30", "arr": "09:01", "dur": 31,  "2nd": 55,   "1st": 88,   "biz": 176},
+        {"number": "C2009","type": "C", "dep": "12:00", "arr": "12:31", "dur": 31,  "2nd": 55,   "1st": 88,   "biz": 176},
+        {"number": "C2015","type": "C", "dep": "18:30", "arr": "19:01", "dur": 31,  "2nd": 55,   "1st": 88,   "biz": 176},
+    ],
+    ("tianjin", "beijing"): [
+        {"number": "C2002","type": "C", "dep": "07:30", "arr": "08:01", "dur": 31,  "2nd": 55,   "1st": 88,   "biz": 176},
+        {"number": "C2006","type": "C", "dep": "09:00", "arr": "09:31", "dur": 31,  "2nd": 55,   "1st": 88,   "biz": 176},
+        {"number": "C2016","type": "C", "dep": "19:00", "arr": "19:31", "dur": 31,  "2nd": 55,   "1st": 88,   "biz": 176},
+    ],
+    ("beijing", "chengdu"): [
+        {"number": "G307", "type": "G", "dep": "08:00", "arr": "14:25", "dur": 385, "2nd": 669,  "1st": 1071, "biz": 2128},
+        {"number": "G2003","type": "G", "dep": "10:00", "arr": "16:25", "dur": 385, "2nd": 669,  "1st": 1071, "biz": 2128},
+    ],
+    ("chengdu", "beijing"): [
+        {"number": "G308", "type": "G", "dep": "08:00", "arr": "14:25", "dur": 385, "2nd": 669,  "1st": 1071, "biz": 2128},
+        {"number": "G2004","type": "G", "dep": "12:00", "arr": "18:25", "dur": 385, "2nd": 669,  "1st": 1071, "biz": 2128},
+    ],
+    ("shanghai", "wuhan"): [
+        {"number": "G503", "type": "G", "dep": "08:00", "arr": "11:30", "dur": 210, "2nd": 390,  "1st": 624,  "biz": 1248},
+        {"number": "G505", "type": "G", "dep": "12:00", "arr": "15:30", "dur": 210, "2nd": 390,  "1st": 624,  "biz": 1248},
+    ],
+    ("wuhan", "shanghai"): [
+        {"number": "G504", "type": "G", "dep": "08:30", "arr": "12:00", "dur": 210, "2nd": 390,  "1st": 624,  "biz": 1248},
+        {"number": "G506", "type": "G", "dep": "14:00", "arr": "17:30", "dur": 210, "2nd": 390,  "1st": 624,  "biz": 1248},
+    ],
+    ("guangzhou", "changsha"): [
+        {"number": "G1001","type": "G", "dep": "07:30", "arr": "09:36", "dur": 126, "2nd": 211,  "1st": 338,  "biz": 676},
+        {"number": "G1003","type": "G", "dep": "10:00", "arr": "12:06", "dur": 126, "2nd": 211,  "1st": 338,  "biz": 676},
+        {"number": "G1009","type": "G", "dep": "16:00", "arr": "18:06", "dur": 126, "2nd": 211,  "1st": 338,  "biz": 676},
+    ],
+    ("changsha", "guangzhou"): [
+        {"number": "G1002","type": "G", "dep": "08:00", "arr": "10:06", "dur": 126, "2nd": 211,  "1st": 338,  "biz": 676},
+        {"number": "G1010","type": "G", "dep": "15:00", "arr": "17:06", "dur": 126, "2nd": 211,  "1st": 338,  "biz": 676},
+    ],
+}
+
+
+def _normalize_city(city: str) -> str:
+    return city.lower().strip().replace(" ", "").replace("-", "").replace("'", "")
+
+
+def _lookup_station(city: str) -> Optional[Dict]:
+    key = city.lower().strip()
+    if key in CHINA_STATION_MAP:
+        return CHINA_STATION_MAP[key]
+    # fuzzy: strip spaces/hyphens
+    for k, v in CHINA_STATION_MAP.items():
+        if _normalize_city(key) == _normalize_city(k):
+            return v
+        if _normalize_city(key) in _normalize_city(k) or _normalize_city(k) in _normalize_city(key):
+            return v
+    return None
+
+
+def _route_key(origin: str, dest: str) -> tuple:
+    return (origin.lower().strip(), dest.lower().strip())
+
+
+def search_china_trains_mock(
+    origin_city: str,
+    destination_city: str,
+    date: str,
+    seat_class: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    orig_info = _lookup_station(origin_city)
+    dest_info = _lookup_station(destination_city)
+
+    if not orig_info or not dest_info:
+        return []
+
+    orig_key = origin_city.lower().strip()
+    dest_key = destination_city.lower().strip()
+
+    # Try direct route lookup
+    route = _TRAIN_ROUTES.get((orig_key, dest_key)) or _TRAIN_ROUTES.get(
+        (_normalize_city(orig_key), _normalize_city(dest_key))
+    )
+
+    # Generic fallback for unknown pairs: estimate 1 train per ~200km
+    if not route:
+        route = [
+            {"number": "G999", "type": "G", "dep": "08:00", "arr": "12:00", "dur": 240,
+             "2nd": 400, "1st": 640, "biz": 1280},
+            {"number": "G1001","type": "G", "dep": "14:00", "arr": "18:00", "dur": 240,
+             "2nd": 400, "1st": 640, "biz": 1280},
+        ]
+
+    # Choose price column based on seat_class
+    price_key = "2nd"
+    if seat_class:
+        sc = seat_class.lower().replace(" ", "_").replace("class", "").strip("_")
+        if "1st" in sc or sc == "first":
+            price_key = "1st"
+        elif "biz" in sc or "business" in sc:
+            price_key = "biz"
+
+    results = []
+    for t in route:
+        price_cny = t[price_key]
+        price_eur = round(price_cny * CNY_TO_EUR, 0)
+        dur_h = t["dur"] // 60
+        dur_m = t["dur"] % 60
+        dur_str = f"{dur_h}h{dur_m:02d}m"
+        seat_label = {"2nd": "2nd Class", "1st": "1st Class", "biz": "Business"}[price_key]
+        results.append({
+            "train_id":          f"crh-{orig_key.replace(' ','')}-{dest_key.replace(' ','')}-{t['number'].lower()}",
+            "train_number":      t["number"],
+            "train_type":        t["type"],
+            "origin_station":    orig_info["station"],
+            "destination_station": dest_info["station"],
+            "origin_city":       origin_city.title(),
+            "destination_city":  destination_city.title(),
+            "departure_time":    f"{date} {t['dep']}",
+            "arrival_time":      f"{date} {t['arr']}",
+            "duration":          dur_str,
+            "seat_class":        seat_label,
+            "price_cny":         price_cny,
+            "price_eur":         price_eur,
+            "booking_link":      f"https://www.trip.com/trains/{orig_info['code']}-{dest_info['code']}/{date}/",
+        })
+
+    return results
