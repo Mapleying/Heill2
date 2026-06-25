@@ -40,6 +40,10 @@ class ChatResponse(BaseModel):
     itinerary: Optional[Dict] = None
     suggestions: Optional[List] = None
 
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
+
 @app.get("/api/config")
 async def get_config():
     return {

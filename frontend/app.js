@@ -298,8 +298,9 @@ chatForm.addEventListener('submit', async (e) => {
 
         if (!res.ok) {
             hideTypingIndicator();
-            const errData = await res.json().catch(() => ({}));
-            appendMessage('agent', `Sorry, something went wrong: ${errData.detail || 'Internal Error'}`);
+            const errText = await res.text().catch(() => '');
+            const errData = (() => { try { return JSON.parse(errText); } catch { return {}; } })();
+            appendMessage('agent', `HTTP ${res.status}: ${errData.detail || errText.slice(0, 120) || 'no body'}`);
             return;
         }
 
