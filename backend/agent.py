@@ -11,7 +11,10 @@ from backend.database import (
 )
 from backend.services.aviasales_client import AviasalesClient
 from backend.services.booking_client import BookingClient
-from backend.services.china_train_client import ChinaTrainClient
+try:
+    from backend.services.china_train_client import ChinaTrainClient
+except ImportError:
+    ChinaTrainClient = None
 
 # Tool Schemas for Gemini Function Calling
 GEMINI_TOOLS = [
@@ -201,7 +204,7 @@ async def execute_tool(
     state: Dict[str, Any],
     aviasales: Optional[AviasalesClient] = None,
     booking: Optional[BookingClient] = None,
-    china_train: Optional[ChinaTrainClient] = None,
+    china_train=None,
 ) -> Dict[str, Any]:
     if name == "search_sport_camps":
         camps = search_camps(
@@ -599,7 +602,7 @@ class ConversationalAgent:
             BookingClient(booking_affiliate_id, booking_api_key)
             if (booking_affiliate_id and booking_api_key) else None
         )
-        self.china_train = ChinaTrainClient(china_train_api_key, china_train_affiliate_id)
+        self.china_train = ChinaTrainClient(china_train_api_key, china_train_affiliate_id) if ChinaTrainClient else None
         self.state: Dict[str, Any] = {
             "history": [],
             "itinerary": None,
